@@ -21,7 +21,7 @@ class TestRamanForgeFeatures(unittest.TestCase):
     """拉曼光谱特征向量类测试"""
 
     def test_normal_feature_vector(self):
-        """正常：12维特征向量输出"""
+        """正常：15维特征向量输出（含3维UV荧光）"""
         f = RamanForgeFeatures(
             fluorescence_bg_level=0.1,
             fluorescence_bg_slope=0.0005,
@@ -34,10 +34,13 @@ class TestRamanForgeFeatures(unittest.TestCase):
             baseline_roughness=0.015,
             high_wavenumber_tail=0.03,
             peak_width_distribution=1.5,
-            spectral_entropy=3.0
+            spectral_entropy=3.0,
+            uv_fluorescence_intensity=0.03,
+            uv_fluorescence_peak_shift=2.0,
+            uv_fluorescence_lifetime_ratio=0.18
         )
         vec = f.to_feature_vector()
-        self.assertEqual(vec.shape, (12,))
+        self.assertEqual(vec.shape, (15,))
         self.assertTrue(np.all(np.isfinite(vec)))
 
     def test_boundary_extreme_fwhm(self):
@@ -57,7 +60,7 @@ class TestRamanForgeFeatures(unittest.TestCase):
             spectral_entropy=-0.5
         )
         vec = f.to_feature_vector()
-        self.assertEqual(vec.shape, (12,))
+        self.assertEqual(vec.shape, (15,))
 
     def test_peak_count_integer(self):
         """正常：峰数为整数（包括零）"""
@@ -77,7 +80,7 @@ class TestForgeReferenceDataset(unittest.TestCase):
         for cls in ds.FORGERY_CLASSES:
             self.assertEqual(len(ds.reference_features[cls]), 150)
         X, y = ds.get_training_data()
-        self.assertEqual(X.shape, (600, 12))
+        self.assertEqual(X.shape, (600, 15))
         self.assertEqual(len(np.unique(y)), 4)
 
     def test_authentic_vs_forgery_separation(self):
@@ -115,6 +118,28 @@ class TestForgeReferenceDataset(unittest.TestCase):
         self.assertGreater(np.mean(stain_bg), np.mean(auth_bg) * 3.0,
             "化学染色荧光背景应显著高于真品")
 
+    def test_uv_fluorescence_discriminates_staining(self):
+        """核心指标：UV荧光强度应显著区分染色与真品"""
+        ds = ForgeProcessReferenceDataset(n_samples_per_class=150)
+        X, y = ds.get_training_data()
+        class_to_idx = {c: i for i, c in enumerate(ds.FORGERY_CLASSES)}
+
+        auth_uv = X[y == class_to_idx['authentic'], 12]
+        stain_uv = X[y == class_to_idx['chemical_staining'], 12]
+        self.assertGreater(np.mean(stain_uv), np.mean(auth_uv) * 5.0,
+            "化学染色UV荧光强度应远高于真品")
+
+    def test_uv_lifetime_discriminates_staining(self):
+        """正常：UV荧光寿命比应区分有机染料与天然矿物"""
+        ds = ForgeProcessReferenceDataset(n_samples_per_class=150)
+        X, y = ds.get_training_data()
+        class_to_idx = {c: i for i, c in enumerate(ds.FORGERY_CLASSES)}
+
+        auth_lt = X[y == class_to_idx['authentic'], 14]
+        stain_lt = X[y == class_to_idx['chemical_staining'], 14]
+        self.assertGreater(np.mean(stain_lt), np.mean(auth_lt) * 2.0,
+            "化学染色UV荧光寿命比应显著高于真品")
+
 
 class TestSVMForgeryClassifier(unittest.TestCase):
     """SVM分类器测试 - 核心指标: 酸蚀样本召回率 > 85%"""
@@ -129,7 +154,7 @@ class TestSVMForgeryClassifier(unittest.TestCase):
         """正常：模型加载成功"""
         self.assertIsNotNone(self.clf.model)
         self.assertIsNotNone(self.clf.scaler_mean)
-        self.assertEqual(self.clf.scaler_mean.shape, (12,))
+        self.assertEqual(self.clf.scaler_mean.shape, (15,))
 
     def test_predict_authentic(self):
         """正常：真品特征应分类为authentic"""
@@ -145,7 +170,10 @@ class TestSVMForgeryClassifier(unittest.TestCase):
             baseline_roughness=0.012,
             high_wavenumber_tail=0.025,
             peak_width_distribution=1.4,
-            spectral_entropy=2.9
+            spectral_entropy=2.9,
+            uv_fluorescence_intensity=0.02,
+            uv_fluorescence_peak_shift=1.0,
+            uv_fluorescence_lifetime_ratio=0.14
         )
         result = self.clf.predict(f)
         self.assertIn(result['predicted_process_key'], ['authentic'])
@@ -166,7 +194,10 @@ class TestSVMForgeryClassifier(unittest.TestCase):
             baseline_roughness=0.06,
             high_wavenumber_tail=0.09,
             peak_width_distribution=4.5,
-            spectral_entropy=4.3
+            spectral_entropy=4.3,
+            uv_fluorescence_intensity=0.08,
+            uv_fluorescence_peak_shift=4.0,
+            uv_fluorescence_lifetime_ratio=0.24
         )
         result = self.clf.predict(f)
         self.assertEqual(result['predicted_process_key'], 'acid_etching')
@@ -174,7 +205,7 @@ class TestSVMForgeryClassifier(unittest.TestCase):
         self.assertGreater(result['forgery_risk'], 0.5)
 
     def test_predict_chemical_staining(self):
-        """正常：化学染色（高荧光）应分类为chemical_staining"""
+        """正常：化学染色（高荧光+高UV荧光）应分类为chemical_staining"""
         f = RamanForgeFeatures(
             fluorescence_bg_level=0.55,
             fluorescence_bg_slope=0.0018,
@@ -187,13 +218,16 @@ class TestSVMForgeryClassifier(unittest.TestCase):
             baseline_roughness=0.035,
             high_wavenumber_tail=0.35,
             peak_width_distribution=2.8,
-            spectral_entropy=5.0
+            spectral_entropy=5.0,
+            uv_fluorescence_intensity=0.75,
+            uv_fluorescence_peak_shift=35.0,
+            uv_fluorescence_lifetime_ratio=0.85
         )
         result = self.clf.predict(f)
         self.assertEqual(result['predicted_process_key'], 'chemical_staining')
 
     def test_predict_laser_treatment(self):
-        """正常：激光处理样本（中等背景+高峰宽）应分类为laser_treatment"""
+        """正常：激光处理样本（中等背景+高峰宽+中等UV）应分类为laser_treatment"""
         f = RamanForgeFeatures(
             fluorescence_bg_level=0.26,
             fluorescence_bg_slope=0.0006,
@@ -206,7 +240,10 @@ class TestSVMForgeryClassifier(unittest.TestCase):
             baseline_roughness=0.046,
             high_wavenumber_tail=0.19,
             peak_width_distribution=3.5,
-            spectral_entropy=4.6
+            spectral_entropy=4.6,
+            uv_fluorescence_intensity=0.20,
+            uv_fluorescence_peak_shift=12.0,
+            uv_fluorescence_lifetime_ratio=0.40
         )
         result = self.clf.predict(f)
         self.assertEqual(result['predicted_process_key'], 'laser_treatment')
@@ -313,6 +350,43 @@ class TestSVMForgeryClassifier(unittest.TestCase):
                 self.assertGreater(recall, 0.60,
                     f"{cls_name}召回率{recall:.2%}过低")
 
+    def test_recall_chemical_staining_80_percent(self):
+        """核心指标：化学染色样本召回率 > 80%（UV特征改善后）"""
+        X, y = self.ds.get_training_data()
+
+        rng = np.random.RandomState(888)
+        idx = rng.permutation(len(y))
+        split = int(0.75 * len(y))
+        train_idx, test_idx = idx[:split], idx[split:]
+        X_train, y_train = X[train_idx], y[train_idx]
+        X_test, y_test = X[test_idx], y[test_idx]
+
+        try:
+            from sklearn.svm import SVC
+        except ImportError:
+            self.skipTest("sklearn不可用")
+            return
+
+        mean = np.mean(X_train, axis=0)
+        std = np.std(X_train, axis=0) + 1e-8
+        X_train_std = (X_train - mean) / std
+        X_test_std = (X_test - mean) / std
+
+        model = SVC(C=10.0, kernel='rbf', gamma='scale',
+                    class_weight='balanced', probability=True, random_state=42)
+        model.fit(X_train_std, y_train)
+        y_pred = model.predict(X_test_std)
+
+        stain_idx = self.class_to_idx['chemical_staining']
+        stain_mask = y_test == stain_idx
+        stain_recall = np.mean(y_pred[stain_mask] == stain_idx) if stain_mask.sum() > 0 else 0.0
+
+        print(f"\n  [工艺分类] 染色样本数: {stain_mask.sum()}")
+        print(f"  [工艺分类] 染色召回率: {stain_recall:.2%} (阈值: >80%)")
+
+        self.assertGreater(stain_recall, 0.80,
+            f"化学染色召回率{stain_recall:.2%}未达到>80%要求")
+
     def test_forgery_risk_correlation(self):
         """正常：作伪风险对于非authentic类应显著较高"""
         X, y = self.ds.get_training_data()
@@ -351,7 +425,7 @@ class TestSVMForgeryClassifier(unittest.TestCase):
         )
         result = self.clf.predict(f)
         self.assertIn('diagnostic_features', result)
-        self.assertGreaterEqual(len(result['diagnostic_features']), 6)
+        self.assertGreaterEqual(len(result['diagnostic_features']), 9)
         for df in result['diagnostic_features']:
             self.assertIn('feature', df)
             self.assertIn('value', df)

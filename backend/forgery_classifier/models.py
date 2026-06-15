@@ -25,6 +25,9 @@ class RamanForgeFeatures:
     high_wavenumber_tail: float = 0.0
     peak_width_distribution: float = 0.0
     spectral_entropy: float = 0.0
+    uv_fluorescence_intensity: float = 0.0
+    uv_fluorescence_peak_shift: float = 0.0
+    uv_fluorescence_lifetime_ratio: float = 0.0
 
     def to_feature_vector(self) -> np.ndarray:
         return np.array([
@@ -39,7 +42,10 @@ class RamanForgeFeatures:
             self.baseline_roughness,
             self.high_wavenumber_tail,
             self.peak_width_distribution,
-            self.spectral_entropy
+            self.spectral_entropy,
+            self.uv_fluorescence_intensity,
+            self.uv_fluorescence_peak_shift,
+            self.uv_fluorescence_lifetime_ratio
         ], dtype=np.float64)
 
 
@@ -79,7 +85,10 @@ class ForgeProcessReferenceDataset:
                 'roughness': (0.01, 0.004),
                 'tail': (0.02, 0.01),
                 'width_dist': (1.5, 0.4),
-                'entropy': (2.8, 0.4)
+                'entropy': (2.8, 0.4),
+                'uv_intensity': (0.02, 0.01),
+                'uv_peak_shift': (0.0, 5.0),
+                'uv_lifetime_ratio': (0.15, 0.05)
             },
             'acid_etching': {
                 'bg_level': (0.18, 0.06),
@@ -93,7 +102,10 @@ class ForgeProcessReferenceDataset:
                 'roughness': (0.06, 0.02),
                 'tail': (0.08, 0.03),
                 'width_dist': (4.5, 1.5),
-                'entropy': (4.2, 0.6)
+                'entropy': (4.2, 0.6),
+                'uv_intensity': (0.08, 0.04),
+                'uv_peak_shift': (5.0, 8.0),
+                'uv_lifetime_ratio': (0.25, 0.08)
             },
             'chemical_staining': {
                 'bg_level': (0.55, 0.15),
@@ -107,7 +119,10 @@ class ForgeProcessReferenceDataset:
                 'roughness': (0.035, 0.015),
                 'tail': (0.35, 0.12),
                 'width_dist': (2.8, 0.9),
-                'entropy': (5.0, 0.5)
+                'entropy': (5.0, 0.5),
+                'uv_intensity': (0.75, 0.15),
+                'uv_peak_shift': (35.0, 10.0),
+                'uv_lifetime_ratio': (0.85, 0.12)
             },
             'laser_treatment': {
                 'bg_level': (0.25, 0.08),
@@ -121,7 +136,10 @@ class ForgeProcessReferenceDataset:
                 'roughness': (0.045, 0.018),
                 'tail': (0.18, 0.06),
                 'width_dist': (3.5, 1.0),
-                'entropy': (4.6, 0.5)
+                'entropy': (4.6, 0.5),
+                'uv_intensity': (0.20, 0.08),
+                'uv_peak_shift': (12.0, 6.0),
+                'uv_lifetime_ratio': (0.40, 0.10)
             }
         }
 
@@ -144,7 +162,10 @@ class ForgeProcessReferenceDataset:
                     baseline_roughness=_p('roughness'),
                     high_wavenumber_tail=_p('tail'),
                     peak_width_distribution=_p('width_dist'),
-                    spectral_entropy=_p('entropy')
+                    spectral_entropy=_p('entropy'),
+                    uv_fluorescence_intensity=_p('uv_intensity'),
+                    uv_fluorescence_peak_shift=rng.normal(params['uv_peak_shift'][0], params['uv_peak_shift'][1]),
+                    uv_fluorescence_lifetime_ratio=_p('uv_lifetime_ratio')
                 )
                 features_list.append(features)
             self.reference_features[cls] = features_list
@@ -178,7 +199,7 @@ class SVMForgeryClassifier:
         self.scaler_mean = None
         self.scaler_std = None
         self.ref_dataset = ForgeProcessReferenceDataset()
-        self._model_path = os.path.join(cache_dir, 'forge_svm_v1.pkl')
+        self._model_path = os.path.join(cache_dir, 'forge_svm_v2_uv.pkl')
         self._load_or_train_model()
 
     def _standardize_features(self, X: np.ndarray, fit: bool = False) -> np.ndarray:
@@ -317,7 +338,10 @@ class SVMForgeryClassifier:
                 baseline_roughness=rng.uniform(0.01, 0.07),
                 high_wavenumber_tail=rng.uniform(0.02, 0.4),
                 peak_width_distribution=rng.uniform(1.0, 5.0),
-                spectral_entropy=rng.uniform(2.5, 5.5)
+                spectral_entropy=rng.uniform(2.5, 5.5),
+                uv_fluorescence_intensity=rng.uniform(0.01, 0.5),
+                uv_fluorescence_peak_shift=rng.uniform(-5, 40),
+                uv_fluorescence_lifetime_ratio=rng.uniform(0.1, 0.8)
             )
 
         if len(data) > len(wavelengths):
@@ -404,6 +428,17 @@ class SVMForgeryClassifier:
         prob_data /= prob_data.sum()
         entropy = float(-np.sum(prob_data * np.log(prob_data + 1e-12)))
 
+        uv_intensity = float(bg_level * 2.5 + tail * 1.5 + np.random.normal(0, 0.03))
+        uv_intensity = max(0.0, uv_intensity)
+
+        uv_peak_shift = float(0.0)
+        if len(peak_positions) > 0:
+            uv_peak_shift = float(wavelengths[peak_positions[0]] - 400.0) if wavelengths[peak_positions[0]] > 300 else 0.0
+        uv_peak_shift += np.random.normal(0, 5.0)
+
+        uv_lifetime = 0.1 + bg_level * 0.6 + tail * 0.3 + np.random.normal(0, 0.02)
+        uv_lifetime = max(0.0, min(1.0, uv_lifetime))
+
         return RamanForgeFeatures(
             fluorescence_bg_level=bg_level,
             fluorescence_bg_slope=bg_slope,
@@ -416,7 +451,10 @@ class SVMForgeryClassifier:
             baseline_roughness=roughness,
             high_wavenumber_tail=tail,
             peak_width_distribution=width_dist,
-            spectral_entropy=entropy
+            spectral_entropy=entropy,
+            uv_fluorescence_intensity=uv_intensity,
+            uv_fluorescence_peak_shift=uv_peak_shift,
+            uv_fluorescence_lifetime_ratio=uv_lifetime
         )
 
     def predict(self, features: RamanForgeFeatures) -> Dict:
@@ -475,7 +513,10 @@ class SVMForgeryClassifier:
                 'baseline_roughness': features.baseline_roughness,
                 'high_wavenumber_tail': features.high_wavenumber_tail,
                 'peak_width_distribution': features.peak_width_distribution,
-                'spectral_entropy': features.spectral_entropy
+                'spectral_entropy': features.spectral_entropy,
+                'uv_fluorescence_intensity': features.uv_fluorescence_intensity,
+                'uv_fluorescence_peak_shift': features.uv_fluorescence_peak_shift,
+                'uv_fluorescence_lifetime_ratio': features.uv_fluorescence_lifetime_ratio
             },
             'timestamp': datetime.now().isoformat()
         }
@@ -501,6 +542,18 @@ class SVMForgeryClassifier:
                 'acid_etching': 0.15,
                 'chemical_staining': 0.25,
                 'laser_treatment': 0.2
+            },
+            'uv_fluorescence_intensity': {
+                'authentic': 0.05,
+                'acid_etching': 0.12,
+                'chemical_staining': 0.55,
+                'laser_treatment': 0.28
+            },
+            'uv_fluorescence_lifetime_ratio': {
+                'authentic': 0.25,
+                'acid_etching': 0.35,
+                'chemical_staining': 0.70,
+                'laser_treatment': 0.50
             }
         }
 
@@ -510,7 +563,10 @@ class SVMForgeryClassifier:
             ('avg_peak_fwhm_cm', '平均峰宽(FWHM)'),
             ('avg_peak_asymmetry', '平均峰形不对称度'),
             ('high_wavenumber_tail', '高波数荧光尾'),
-            ('spectral_entropy', '光谱信息熵')
+            ('spectral_entropy', '光谱信息熵'),
+            ('uv_fluorescence_intensity', 'UV荧光强度'),
+            ('uv_fluorescence_peak_shift', 'UV荧光峰位移'),
+            ('uv_fluorescence_lifetime_ratio', 'UV荧光寿命比')
         ]:
             value = getattr(features, feat_name)
             if feat_name in thresholds:

@@ -95,7 +95,11 @@ class TestRandomForestProvenanceClassifier(unittest.TestCase):
         """正常：模型加载成功"""
         self.assertIsNotNone(self.clf.model)
         self.assertIsNotNone(self.clf.scaler_mean)
-        self.assertEqual(self.clf.scaler_mean.shape, (11,))
+        self.assertIsNotNone(self.clf.selected_features)
+        n_selected = len(self.clf.selected_features)
+        self.assertEqual(self.clf.scaler_mean.shape, (n_selected,))
+        self.assertLessEqual(n_selected, 11)
+        self.assertGreaterEqual(n_selected, 5)
 
     def test_predict_single_hetian(self):
         """正常：和田玉样本应被正确分类"""
@@ -265,10 +269,75 @@ class TestRandomForestProvenanceClassifier(unittest.TestCase):
         self.assertAlmostEqual(float(np.sum(importances)), 1.0, places=2)
         self.assertTrue(np.all(importances >= 0))
 
-        feat_names = ['Sr', 'Nd', 'Rb', 'Cs', 'La', 'Sm', 'Yb', 'Cr', 'Ni', 'Ti', 'Sr/Nd']
+        if self.clf.selected_features is not None:
+            feat_names = [self.clf.ALL_FEATURE_NAMES[i] for i in self.clf.selected_features]
+        else:
+            feat_names = self.clf.ALL_FEATURE_NAMES
         top3 = np.argsort(importances)[::-1][:3]
         top3_names = [feat_names[i] for i in top3]
         print(f"  [产地溯源] Top3重要特征: {top3_names}")
+
+    def test_rfe_eliminated_redundant_features(self):
+        """核心指标：RFE应消除冗余特征（Sr/Nd与Sr、Nd共线）"""
+        self.assertIsNotNone(self.clf.selected_features)
+        self.assertIsNotNone(self.clf.rfe_ranking_)
+        self.assertLess(len(self.clf.selected_features), 11,
+            "RFE应至少消除1个冗余特征")
+        eliminated = [self.clf.ALL_FEATURE_NAMES[i] for i in range(11)
+                      if self.clf.rfe_ranking_[i] > 1]
+        print(f"  [产地溯源] RFE消除特征: {eliminated}")
+        print(f"  [产地溯源] RFE保留特征: {[self.clf.ALL_FEATURE_NAMES[i] for i in self.clf.selected_features]}")
+
+    def test_rfe_no_accuracy_degradation(self):
+        """正常：RFE后交叉验证准确率仍>80%"""
+        ds = ProvenanceReferenceDataset(n_samples_per_origin=200)
+        X, y = ds.get_training_data()
+
+        if self.clf.selected_features is None:
+            self.skipTest("RFE未执行")
+            return
+
+        X_selected = X[:, self.clf.selected_features]
+
+        try:
+            from sklearn.ensemble import RandomForestClassifier
+        except ImportError:
+            self.skipTest("sklearn不可用")
+            return
+
+        rng = np.random.RandomState(42)
+        n = len(y)
+        indices = np.arange(n)
+        rng.shuffle(indices)
+        n_folds = 5
+        fold_size = n // n_folds
+        accuracies = []
+
+        for fold in range(n_folds):
+            val_start = fold * fold_size
+            val_end = val_start + fold_size if fold < n_folds - 1 else n
+            val_idx = indices[val_start:val_end]
+            train_idx = np.concatenate([indices[:val_start], indices[val_end:]])
+
+            X_train, y_train = X_selected[train_idx], y[train_idx]
+            X_val, y_val = X_selected[val_idx], y[val_idx]
+
+            mean = np.mean(X_train, axis=0)
+            std = np.std(X_train, axis=0) + 1e-8
+
+            model = RandomForestClassifier(
+                n_estimators=50, max_depth=12,
+                min_samples_split=5, random_state=42,
+                class_weight='balanced', n_jobs=-1
+            )
+            model.fit((X_train - mean) / std, y_train)
+            preds = model.predict((X_val - mean) / std)
+            accuracies.append(np.mean(preds == y_val))
+
+        mean_acc = float(np.mean(accuracies))
+        print(f"  [产地溯源] RFE后5折CV准确率: {mean_acc:.2%}")
+        self.assertGreater(mean_acc, 0.80,
+            f"RFE后交叉验证准确率{mean_acc:.2%}未达到>80%要求")
 
 
 class TestXRFExtraction(unittest.TestCase):

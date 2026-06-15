@@ -125,16 +125,31 @@ class TestBayesianPHInversion(unittest.TestCase):
 
     def setUp(self):
         self.inverter = BayesianPHInversion(
-            ph_prior_mean=7.0,
-            ph_prior_std=2.0,
+            prior_type='uniform',
+            ph_min=3.0,
+            ph_max=11.0,
             n_particles=500,
             likelihood_sigma=0.7
         )
 
-    def test_log_prior_normal(self):
-        """正常：先验对pH=7应为最大值附近"""
-        lp_center = self.inverter.log_prior(7.0)
-        lp_edge = self.inverter.log_prior(4.0)
+    def test_log_prior_uniform(self):
+        """正常：无信息先验在[pH_min, pH_max]内为常数"""
+        lp1 = self.inverter.log_prior(5.0)
+        lp2 = self.inverter.log_prior(7.0)
+        lp3 = self.inverter.log_prior(9.0)
+        self.assertAlmostEqual(lp1, lp2, places=5,
+            msg="均匀先验下不同pH值对数先验应相等")
+        self.assertAlmostEqual(lp2, lp3, places=5,
+            msg="均匀先验下不同pH值对数先验应相等")
+
+    def test_log_prior_normal_fallback(self):
+        """正常：prior_type='normal'时先验为高斯分布"""
+        inv_normal = BayesianPHInversion(
+            ph_prior_mean=7.0, ph_prior_std=2.0,
+            prior_type='normal'
+        )
+        lp_center = inv_normal.log_prior(7.0)
+        lp_edge = inv_normal.log_prior(4.0)
         self.assertGreater(lp_center, lp_edge)
 
     def test_log_prior_boundary(self):

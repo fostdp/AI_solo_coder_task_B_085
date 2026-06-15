@@ -70,35 +70,43 @@ class PHGeochemicalModel:
 class BayesianPHInversion:
     def __init__(
         self,
-        ph_prior_mean: float = 7.0,
-        ph_prior_std: float = 1.5,
+        ph_prior_mean: float = None,
+        ph_prior_std: float = None,
         ph_min: float = 3.0,
         ph_max: float = 11.0,
         n_particles: int = 2000,
         likelihood_sigma: float = 0.15,
+        prior_type: str = 'uniform',
         cache_dir: str = '_model_cache'
     ):
-        self.ph_prior_mean = ph_prior_mean
-        self.ph_prior_std = ph_prior_std
         self.ph_min = ph_min
         self.ph_max = ph_max
         self.n_particles = n_particles
         self.likelihood_sigma = likelihood_sigma
+        self.prior_type = prior_type
         self.cache_dir = cache_dir
+        self.ph_prior_mean = ph_prior_mean if ph_prior_mean is not None else (ph_min + ph_max) / 2.0
+        self.ph_prior_std = ph_prior_std if ph_prior_std is not None else (ph_max - ph_min) / 4.0
         self.geochem = PHGeochemicalModel()
         self._posterior_cache: Dict[str, Dict] = {}
 
     def sample_prior(self, n: int = None) -> np.ndarray:
         if n is None:
             n = self.n_particles
-        samples = np.random.normal(self.ph_prior_mean, self.ph_prior_std, n)
+        if self.prior_type == 'uniform':
+            samples = np.random.uniform(self.ph_min, self.ph_max, n)
+        else:
+            samples = np.random.normal(self.ph_prior_mean, self.ph_prior_std, n)
         return np.clip(samples, self.ph_min, self.ph_max)
 
     def log_prior(self, ph: float) -> float:
         if ph < self.ph_min or ph > self.ph_max:
             return -np.inf
-        z = (ph - self.ph_prior_mean) / self.ph_prior_std
-        return -0.5 * z * z - np.log(self.ph_prior_std * np.sqrt(2 * np.pi))
+        if self.prior_type == 'uniform':
+            return -np.log(self.ph_max - self.ph_min)
+        else:
+            z = (ph - self.ph_prior_mean) / self.ph_prior_std
+            return -0.5 * z * z - np.log(self.ph_prior_std * np.sqrt(2 * np.pi))
 
     def log_likelihood(self, ph: float, profile: PatinaProfile, age_years: float) -> float:
         total_ll = 0.0

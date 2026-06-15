@@ -125,24 +125,30 @@ class ProvenanceReferenceDataset:
 
 
 class RandomForestProvenanceClassifier:
+    ALL_FEATURE_NAMES = ['Sr', 'Nd', 'Rb', 'Cs', 'La', 'Sm', 'Yb', 'Cr', 'Ni', 'Ti', 'Sr/Nd']
+
     def __init__(
         self,
         n_estimators: int = 100,
         max_depth: int = 15,
         min_samples_split: int = 5,
         random_state: int = 42,
-        cache_dir: str = '_model_cache'
+        cache_dir: str = '_model_cache',
+        n_features_to_select: int = 8
     ):
         self.n_estimators = n_estimators
         self.max_depth = max_depth
         self.min_samples_split = min_samples_split
         self.random_state = random_state
         self.cache_dir = cache_dir
+        self.n_features_to_select = n_features_to_select
         self.model = None
         self.scaler_mean = None
         self.scaler_std = None
+        self.selected_features = None
+        self.rfe_ranking_ = None
         self.ref_dataset = ProvenanceReferenceDataset()
-        self._model_path = os.path.join(cache_dir, 'provenance_rf_v1.pkl')
+        self._model_path = os.path.join(cache_dir, 'provenance_rf_v2_rfe.pkl')
         self._load_or_train_model()
 
     def _standardize_features(self, X: np.ndarray, fit: bool = False) -> np.ndarray:
@@ -150,6 +156,51 @@ class RandomForestProvenanceClassifier:
             self.scaler_mean = np.mean(X, axis=0)
             self.scaler_std = np.std(X, axis=0) + 1e-8
         return (X - self.scaler_mean) / self.scaler_std
+
+    def _recursive_feature_elimination(self, X, y, n_select):
+        n_features = X.shape[1]
+        if n_select >= n_features:
+            self.selected_features = np.arange(n_features)
+            self.rfe_ranking_ = np.ones(n_features, dtype=int)
+            return X, y
+
+        try:
+            from sklearn.ensemble import RandomForestClassifier
+            from sklearn.model_selection import cross_val_score
+
+            remaining = list(range(n_features))
+            ranking = np.zeros(n_features, dtype=int)
+            current_rank = n_features
+
+            while len(remaining) > n_select:
+                X_sub = X[:, remaining]
+                clf = RandomForestClassifier(
+                    n_estimators=50, max_depth=12,
+                    min_samples_split=5, random_state=self.random_state,
+                    class_weight='balanced', n_jobs=-1
+                )
+                clf.fit(X_sub, y)
+                importances = clf.feature_importances_
+                worst_local = int(np.argmin(importances))
+                worst_global = remaining[worst_local]
+                ranking[worst_global] = current_rank
+                current_rank -= 1
+                remaining.pop(worst_local)
+
+            for idx in remaining:
+                if ranking[idx] == 0:
+                    ranking[idx] = 1
+
+            self.selected_features = np.array(sorted(remaining))
+            self.rfe_ranking_ = ranking
+            logger.info(f"[Provenance] RFE选择特征: {[self.ALL_FEATURE_NAMES[i] for i in self.selected_features]}")
+            return X[:, self.selected_features], y
+
+        except ImportError:
+            self.selected_features = np.arange(n_features)
+            self.rfe_ranking_ = np.ones(n_features, dtype=int)
+            logger.warning("[Provenance] sklearn不可用，跳过RFE，使用全部特征")
+            return X, y
 
     def _train_sklearn_rf(self, X_train, y_train):
         from sklearn.ensemble import RandomForestClassifier
@@ -275,6 +326,8 @@ class RandomForestProvenanceClassifier:
                 self.model = cache['model']
                 self.scaler_mean = cache['mean']
                 self.scaler_std = cache['std']
+                self.selected_features = cache.get('selected_features', np.arange(11))
+                self.rfe_ranking_ = cache.get('rfe_ranking', np.ones(11, dtype=int))
                 logger.info("[Provenance] 模型从缓存加载成功")
                 return
         except Exception as e:
@@ -286,27 +339,34 @@ class RandomForestProvenanceClassifier:
                     pass
 
         X, y = self.ref_dataset.get_training_data()
-        X_std = self._standardize_features(X, fit=True)
+        X_rfe, y_rfe = self._recursive_feature_elimination(X, y, self.n_features_to_select)
+        X_std = self._standardize_features(X_rfe, fit=True)
 
         try:
-            self.model = self._train_sklearn_rf(X_std, y)
+            self.model = self._train_sklearn_rf(X_std, y_rfe)
         except ImportError:
             logger.warning("[Provenance] sklearn不可用，使用纯numpy决策树实现")
-            self.model = self._train_simple_tree_ensemble(X_std, y)
+            self.model = self._train_simple_tree_ensemble(X_std, y_rfe)
 
         try:
             with open(self._model_path, 'wb') as f:
                 pickle.dump({
                     'model': self.model,
                     'mean': self.scaler_mean,
-                    'std': self.scaler_std
+                    'std': self.scaler_std,
+                    'selected_features': self.selected_features,
+                    'rfe_ranking': self.rfe_ranking_
                 }, f, protocol=pickle.HIGHEST_PROTOCOL)
             logger.info("[Provenance] 模型已保存到缓存")
         except Exception as e:
             logger.warning(f"[Provenance] 模型缓存保存失败: {e}")
 
     def predict(self, profile: TraceElementProfile) -> Dict:
-        x = profile.to_feature_vector().reshape(1, -1)
+        x_full = profile.to_feature_vector().reshape(1, -1)
+        if self.selected_features is not None:
+            x = x_full[:, self.selected_features]
+        else:
+            x = x_full
         x_std = self._standardize_features(x)
 
         probs = self.model.predict_proba(x_std)[0]
@@ -326,9 +386,10 @@ class RandomForestProvenanceClassifier:
         confidence = float(probs[best_idx])
 
         if hasattr(self.model, 'feature_importances_'):
-            feat_names = [
-                'Sr', 'Nd', 'Rb', 'Cs', 'La', 'Sm', 'Yb', 'Cr', 'Ni', 'Ti', 'Sr/Nd'
-            ]
+            if self.selected_features is not None:
+                feat_names = [self.ALL_FEATURE_NAMES[i] for i in self.selected_features]
+            else:
+                feat_names = self.ALL_FEATURE_NAMES
             importances = self.model.feature_importances_
             feat_imp = sorted(
                 [{'name': n, 'importance': float(v)} for n, v in zip(feat_names, importances)],
@@ -338,12 +399,21 @@ class RandomForestProvenanceClassifier:
         else:
             feat_imp = []
 
+        rfe_info = {}
+        if self.rfe_ranking_ is not None:
+            rfe_info = {
+                'selected_features': [self.ALL_FEATURE_NAMES[i] for i in self.selected_features] if self.selected_features is not None else self.ALL_FEATURE_NAMES,
+                'eliminated_features': [self.ALL_FEATURE_NAMES[i] for i in range(len(self.ALL_FEATURE_NAMES)) if self.rfe_ranking_[i] > 1],
+                'ranking': {self.ALL_FEATURE_NAMES[i]: int(self.rfe_ranking_[i]) for i in range(len(self.ALL_FEATURE_NAMES))}
+            }
+
         return {
             'predicted_origin': self.ref_dataset.ORIGIN_NAMES[self.ref_dataset.ORIGINS[best_idx]],
             'predicted_origin_key': self.ref_dataset.ORIGINS[best_idx],
             'confidence': confidence,
             'top_predictions': predictions,
             'feature_importance': feat_imp,
+            'rfe_info': rfe_info,
             'trace_elements': {
                 'Sr_ppm': profile.sr_ppm,
                 'Nd_ppm': profile.nd_ppm,
