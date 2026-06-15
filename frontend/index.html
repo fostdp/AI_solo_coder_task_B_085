@@ -87,6 +87,8 @@
                 <button class="tab-btn" data-tab="detail">玉器详情</button>
                 <button class="tab-btn" data-tab="alerts">告警中心</button>
                 <button class="tab-btn" data-tab="spectrum">光谱分析</button>
+                <button class="tab-btn" data-tab="science">产地与环境</button>
+                <button class="tab-btn" data-tab="virtual-play">虚拟盘玩</button>
             </div>
 
             <div class="tab-content" id="tab-list">
@@ -197,6 +199,133 @@
                     </div>
                 </div>
             </div>
+
+            <div class="tab-content hidden" id="tab-science">
+                <div class="science-container">
+                    <div class="science-header">
+                        <h2>产地溯源与埋藏环境分析</h2>
+                        <div class="science-actions">
+                            <button id="btn-run-provenance" class="btn btn-primary">🔬 产地溯源</button>
+                            <button id="btn-run-ph" class="btn btn-primary">🌡  pH反演</button>
+                            <button id="btn-run-forgery" class="btn btn-danger">⚗  作伪工艺分类</button>
+                        </div>
+                    </div>
+                    <div class="science-grid">
+                        <div class="science-panel provenance-panel">
+                            <h3>🪨 玉料产地溯源</h3>
+                            <div class="provenance-result">
+                                <div class="provenance-main">
+                                    <div class="provenance-origin" id="prov-origin">请点击"产地溯源"开始分析</div>
+                                    <div class="provenance-confidence">
+                                        <div class="confidence-label">置信度</div>
+                                        <div class="confidence-bar"><div id="prov-confidence-fill" class="confidence-fill"></div></div>
+                                        <div id="prov-confidence-text" class="confidence-text">--</div>
+                                    </div>
+                                </div>
+                                <div class="provenance-top-list" id="prov-top-list"></div>
+                                <div class="provenance-elements">
+                                    <h4>微量元素特征</h4>
+                                    <div id="prov-elements" class="element-grid"></div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="science-panel ph-panel">
+                            <h3>🌱 埋藏环境pH反演</h3>
+                            <div class="ph-result">
+                                <div class="ph-main">
+                                    <div class="ph-value">
+                                        <span class="ph-label">估计pH值</span>
+                                        <span id="ph-value" class="ph-number">--</span>
+                                        <span id="ph-env" class="ph-env">--</span>
+                                    </div>
+                                    <div class="ph-range">
+                                        95%置信区间: <span id="ph-ci">--</span>
+                                    </div>
+                                    <div class="ph-scale">
+                                        <div class="ph-scale-bar">
+                                            <div id="ph-marker" class="ph-marker"></div>
+                                        </div>
+                                        <div class="ph-scale-labels">
+                                            <span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span><span>9</span><span>10</span><span>11</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="ph-redox" id="ph-redox"></div>
+                                <div class="ph-history">
+                                    <h4>pH历史演化（按深度分相）</h4>
+                                    <div id="ph-history-list" class="ph-history-list"></div>
+                                </div>
+                                <div class="ph-interpretation" id="ph-interpretation"></div>
+                            </div>
+                        </div>
+                        <div class="science-panel forgery-panel">
+                            <h3>⚗ 仿古作伪工艺识别</h3>
+                            <div class="forgery-result">
+                                <div class="forgery-main">
+                                    <div id="forgery-process" class="forgery-process">--</div>
+                                    <div id="forgery-risk" class="forgery-risk">作伪风险: --</div>
+                                </div>
+                                <div class="forgery-top-list" id="forgery-top-list"></div>
+                                <div class="forgery-diagnostics">
+                                    <h4>光谱诊断特征</h4>
+                                    <div id="forgery-diagnostics-list" class="diagnostics-grid"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-content hidden" id="tab-virtual-play">
+                <div class="play-container">
+                    <div class="play-header">
+                        <h2>🖐 虚拟盘玩体验</h2>
+                        <div class="play-controls">
+                            <span>提示: 在玉器表面上拖动鼠标模拟盘玩</span>
+                            <button id="btn-play-auto" class="btn btn-primary">自动盘玩5秒</button>
+                            <button id="btn-play-reset" class="btn btn-secondary">重置</button>
+                        </div>
+                    </div>
+                    <div class="play-main">
+                        <div class="play-canvas-wrapper">
+                            <canvas id="play-canvas" width="500" height="500"></canvas>
+                        </div>
+                        <div class="play-stats">
+                            <div class="play-stat-card">
+                                <div class="play-stat-label">盘玩次数</div>
+                                <div id="play-count" class="play-stat-value">0</div>
+                            </div>
+                            <div class="play-stat-card">
+                                <div class="play-stat-label">包浆程度</div>
+                                <div class="play-stat-bar">
+                                    <div id="play-polish-bar" class="play-stat-fill polish"></div>
+                                </div>
+                                <div id="play-polish-text" class="play-stat-sub">0%</div>
+                            </div>
+                            <div class="play-stat-card">
+                                <div class="play-stat-label">沁色覆盖率</div>
+                                <div class="play-stat-bar">
+                                    <div id="play-patina-bar" class="play-stat-fill patina"></div>
+                                </div>
+                                <div id="play-patina-text" class="play-stat-sub">--</div>
+                            </div>
+                            <div class="play-stat-card">
+                                <div class="play-stat-label">磨损区域</div>
+                                <div id="play-wear-area" class="play-stat-value">0%</div>
+                            </div>
+                            <div class="play-info">
+                                <p>💡 <strong>盘玩原理:</strong></p>
+                                <ul>
+                                    <li>基于 Blinn-Phong 光照模型实时渲染</li>
+                                    <li>环境光 + 漫反射 + 高光（随抛光度增强）</li>
+                                    <li>Fe³⁺黄褐沁色随盘玩逐渐减淡</li>
+                                    <li>鼠标压力模拟手部摩擦产生包浆</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </main>
     </div>
 
@@ -216,6 +345,7 @@
     <script src="js/PatinaDensity.js"></script>
     <script src="js/JadeImage.js"></script>
     <script src="js/spectrum.js"></script>
+    <script src="js/VirtualPlay.js"></script>
     <script src="js/app.js"></script>
 </body>
 </html>

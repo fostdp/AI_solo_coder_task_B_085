@@ -57,6 +57,9 @@ INSTALLED_APPS = [
     'diffusion_solver',
     'anomaly_detector',
     'alert_ws',
+    'provenance_tracer',
+    'ph_inversion',
+    'forgery_classifier',
 ]
 
 MIDDLEWARE = [

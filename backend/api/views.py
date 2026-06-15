@@ -443,3 +443,96 @@ class SimulatorStop(APIView):
     def post(self, request):
         from fiveg_receiver.views import SimulatorStopView
         return SimulatorStopView().post(request)
+
+
+class ProvenanceView(APIView):
+    def get(self, request, artifact_id):
+        collection = get_collection('provenance_results')
+        limit = int(request.GET.get('limit', 10))
+        data = list(collection.find(
+            {'artifact_id': artifact_id}
+        ).sort('timestamp', -1).limit(limit))
+
+        for d in data:
+            d['_id'] = str(d['_id'])
+
+        return Response({'data': data})
+
+    def post(self, request, artifact_id):
+        artifact_coll = get_collection('jade_artifacts')
+        artifact = artifact_coll.find_one({'artifact_id': artifact_id})
+        if not artifact:
+            return Response({'error': 'Artifact not found'}, status=404)
+
+        from provenance_tracer.tasks import trace_provenance
+
+        xrf_data = request.data.get('xrf_spectrum')
+        trace_provenance.delay(artifact_id, xrf_data)
+
+        return Response({
+            'status': 'submitted',
+            'task_type': 'provenance_trace',
+            'artifact_id': artifact_id,
+        })
+
+
+class PHInversionView(APIView):
+    def get(self, request, artifact_id):
+        collection = get_collection('ph_inversion_results')
+        limit = int(request.GET.get('limit', 10))
+        data = list(collection.find(
+            {'artifact_id': artifact_id}
+        ).sort('timestamp', -1).limit(limit))
+
+        for d in data:
+            d['_id'] = str(d['_id'])
+
+        return Response({'data': data})
+
+    def post(self, request, artifact_id):
+        artifact_coll = get_collection('jade_artifacts')
+        artifact = artifact_coll.find_one({'artifact_id': artifact_id})
+        if not artifact:
+            return Response({'error': 'Artifact not found'}, status=404)
+
+        from ph_inversion.tasks import invert_ph_history
+
+        diffusion_data = request.data.get('diffusion_result')
+        invert_ph_history.delay(artifact_id, diffusion_data)
+
+        return Response({
+            'status': 'submitted',
+            'task_type': 'ph_inversion',
+            'artifact_id': artifact_id,
+        })
+
+
+class ForgeryProcessView(APIView):
+    def get(self, request, artifact_id):
+        collection = get_collection('forgery_classification_results')
+        limit = int(request.GET.get('limit', 10))
+        data = list(collection.find(
+            {'artifact_id': artifact_id}
+        ).sort('timestamp', -1).limit(limit))
+
+        for d in data:
+            d['_id'] = str(d['_id'])
+
+        return Response({'data': data})
+
+    def post(self, request, artifact_id):
+        artifact_coll = get_collection('jade_artifacts')
+        artifact = artifact_coll.find_one({'artifact_id': artifact_id})
+        if not artifact:
+            return Response({'error': 'Artifact not found'}, status=404)
+
+        from forgery_classifier.tasks import classify_forgery_process
+
+        raman_data = request.data.get('raman_spectrum')
+        classify_forgery_process.delay(artifact_id, raman_data)
+
+        return Response({
+            'status': 'submitted',
+            'task_type': 'forgery_process',
+            'artifact_id': artifact_id,
+        })

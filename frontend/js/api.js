@@ -96,5 +96,47 @@ const API = {
             headers: { 'Content-Type': 'application/json' }
         });
         return response.json();
+    },
+
+    async getProvenance(artifactId) {
+        const response = await fetch(`${CONFIG.API_BASE_URL}/artifacts/${artifactId}/provenance/`);
+        return response.json();
+    },
+
+    async runProvenance(artifactId, data = {}) {
+        const response = await fetch(`${CONFIG.API_BASE_URL}/artifacts/${artifactId}/provenance/`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+        return response.json();
+    },
+
+    async getPHInversion(artifactId) {
+        const response = await fetch(`${CONFIG.API_BASE_URL}/artifacts/${artifactId}/ph-inversion/`);
+        return response.json();
+    },
+
+    async runPHInversion(artifactId, data = {}) {
+        const response = await fetch(`${CONFIG.API_BASE_URL}/artifacts/${artifactId}/ph-inversion/`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+        return response.json();
+    },
+
+    async getForgeryProcess(artifactId) {
+        const response = await fetch(`${CONFIG.API_BASE_URL}/artifacts/${artifactId}/forgery-process/`);
+        return response.json();
+    },
+
+    async runForgeryProcess(artifactId, data = {}) {
+        const response = await fetch(`${CONFIG.API_BASE_URL}/artifacts/${artifactId}/forgery-process/`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+        return response.json();
     }
 };

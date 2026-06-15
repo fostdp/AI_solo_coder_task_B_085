@@ -96,6 +96,26 @@ const App = {
             this.state.spectrumType = e.target.value;
             this.updateSpectrumChart();
         });
+
+        const provBtn = document.getElementById('btn-run-provenance');
+        if (provBtn) provBtn.addEventListener('click', () => this.runProvenance());
+
+        const phBtn = document.getElementById('btn-run-ph');
+        if (phBtn) phBtn.addEventListener('click', () => this.runPHInversion());
+
+        const forgeryBtn = document.getElementById('btn-run-forgery');
+        if (forgeryBtn) forgeryBtn.addEventListener('click', () => this.runForgeryProcess());
+
+        const autoPlayBtn = document.getElementById('btn-play-auto');
+        if (autoPlayBtn) autoPlayBtn.addEventListener('click', () => this.runAutoPlay());
+
+        const resetPlayBtn = document.getElementById('btn-play-reset');
+        if (resetPlayBtn) resetPlayBtn.addEventListener('click', () => this.resetVirtualPlay());
+
+        const playCanvas = document.getElementById('play-canvas');
+        if (playCanvas) {
+            playCanvas.addEventListener('jade-play', (e) => this.updatePlayStats(e.detail.stats));
+        }
     },
 
     switchTab(tabName) {
@@ -108,6 +128,10 @@ const App = {
 
         if (tabName === 'detail' && this.state.currentArtifact) {
             this.updateDetailView();
+        } else if (tabName === 'spectrum' && this.state.currentArtifact) {
+            this.updateSpectrumChart();
+        } else if (tabName === 'virtual-play') {
+            this.initVirtualPlay();
         }
     },
 
@@ -714,6 +738,269 @@ const App = {
             clearTimeout(timeout);
             timeout = setTimeout(later, wait);
         };
+    },
+
+    async runProvenance() {
+        const artifact = this.state.currentArtifact;
+        if (!artifact) {
+            alert('请先在玉器列表中选择一件玉器');
+            return;
+        }
+        try {
+            const result = await API.runProvenance(artifact.artifact_id);
+            this.renderProvenanceResult(result);
+        } catch (e) {
+            console.error('产地溯源失败:', e);
+        }
+    },
+
+    renderProvenanceResult(r) {
+        if (!r) return;
+
+        document.getElementById('prov-origin').innerHTML = `
+            <div class="origin-name">${r.predicted_origin || '--'}</div>
+            <div class="origin-key">(${r.predicted_origin_key || '--'})</div>
+        `;
+
+        const conf = r.confidence || 0;
+        document.getElementById('prov-confidence-fill').style.width = (conf * 100).toFixed(0) + '%';
+        document.getElementById('prov-confidence-text').textContent = (conf * 100).toFixed(1) + '%';
+
+        if (r.top_predictions && r.top_predictions.length > 0) {
+            document.getElementById('prov-top-list').innerHTML = `
+                <h4>候选产地 (Top ${r.top_predictions.length})</h4>
+                ${r.top_predictions.map((p, i) => `
+                    <div class="top-item">
+                        <span class="top-rank">${i + 1}</span>
+                        <span class="top-name">${p.origin_name}</span>
+                        <span class="top-prob">${(p.probability * 100).toFixed(1)}%</span>
+                    </div>
+                `).join('')}
+            `;
+        }
+
+        if (r.trace_elements) {
+            const te = r.trace_elements;
+            const items = [
+                ['Sr', te.Sr_ppm],
+                ['Nd', te.Nd_ppm],
+                ['Rb', te.Rb_ppm],
+                ['Cs', te.Cs_ppm],
+                ['La', te.La_ppm],
+                ['Sm', te.Sm_ppm],
+                ['Yb', te.Yb_ppm],
+                ['Cr', te.Cr_ppm],
+                ['Ni', te.Ni_ppm],
+                ['Ti', te.Ti_ppm],
+                ['Sr/Nd', te.Sr_Nd_ratio]
+            ];
+            document.getElementById('prov-elements').innerHTML = items.map(([name, val]) => `
+                <div class="element-item">
+                    <span class="elem-name">${name}</span>
+                    <span class="elem-value">${typeof val === 'number' ? val.toFixed(2) : '--'}</span>
+                </div>
+            `).join('');
+        }
+    },
+
+    async runPHInversion() {
+        const artifact = this.state.currentArtifact;
+        if (!artifact) {
+            alert('请先在玉器列表中选择一件玉器');
+            return;
+        }
+        try {
+            const result = await API.runPHInversion(artifact.artifact_id);
+            this.renderPHResult(result);
+        } catch (e) {
+            console.error('pH反演失败:', e);
+        }
+    },
+
+    renderPHResult(r) {
+        if (!r) return;
+
+        const ph = r.ph_mean;
+        const env = r.soil_environment || {};
+        document.getElementById('ph-value').textContent = ph ? ph.toFixed(2) : '--';
+        document.getElementById('ph-env').textContent = env.name || '--';
+        document.getElementById('ph-env').style.color = this._phColor(ph);
+
+        const ci = r.ph_95ci || [];
+        document.getElementById('ph-ci').textContent =
+            ci.length === 2 ? `[${ci[0].toFixed(2)}, ${ci[1].toFixed(2)}]` : '--';
+
+        if (typeof ph === 'number') {
+            const pos = Math.max(0, Math.min(100, ((ph - 3) / 8) * 100));
+            document.getElementById('ph-marker').style.left = pos + '%';
+            document.getElementById('ph-marker').style.background = this._phColor(ph);
+        }
+
+        if (r.redox_condition) {
+            const rc = r.redox_condition;
+            document.getElementById('ph-redox').innerHTML = `
+                <div class="redox-title">氧化还原环境</div>
+                <div class="redox-name">${rc.name || '--'}</div>
+                <div class="redox-desc">${rc.description || ''}</div>
+                <div class="redox-ratio">Fe³⁺/Fe²⁺ 平均比: ${(rc.avg_fe3_fe2_ratio || 0).toFixed(3)}</div>
+            `;
+        }
+
+        if (r.ph_history && r.ph_history.phases) {
+            const phases = r.ph_history.phases;
+            document.getElementById('ph-history-list').innerHTML = phases.map(p => `
+                <div class="ph-phase">
+                    <div class="phase-depth">深度 ${p.depth_range_mm[0].toFixed(1)}-${p.depth_range_mm[1].toFixed(1)} mm</div>
+                    <div class="phase-age">距今 ~${(p.phase_age_years / 1000).toFixed(1)} ka</div>
+                    <div class="phase-ph">pH: ${p.ph_mean.toFixed(2)} <span class="phase-env">${p.soil_environment?.name || ''}</span></div>
+                </div>
+            `).join('') || '<div class="no-data">数据不足</div>';
+
+            if (r.ph_history.overall_trend) {
+                const trend = r.ph_history.overall_trend;
+                document.getElementById('ph-history-list').insertAdjacentHTML('beforeend', `
+                    <div class="ph-trend">趋势: ${trend.description || '--'} (${trend.slope_per_1000_years?.toFixed(3) || 0}/千年)</div>
+                `);
+            }
+        }
+
+        if (r.interpretation) {
+            document.getElementById('ph-interpretation').innerHTML = `
+                <h4>环境解读</h4>
+                <div class="ph-interp-text">${r.interpretation}</div>
+            `;
+        }
+    },
+
+    _phColor(ph) {
+        if (ph == null) return '#888';
+        if (ph < 5.5) return '#ff4444';
+        if (ph < 6.5) return '#ff9800';
+        if (ph < 7.5) return '#4caf50';
+        if (ph < 8.5) return '#00bcd4';
+        return '#2196f3';
+    },
+
+    async runForgeryProcess() {
+        const artifact = this.state.currentArtifact;
+        if (!artifact) {
+            alert('请先在玉器列表中选择一件玉器');
+            return;
+        }
+        try {
+            const result = await API.runForgeryProcess(artifact.artifact_id);
+            this.renderForgeryProcessResult(result);
+        } catch (e) {
+            console.error('作伪工艺分类失败:', e);
+        }
+    },
+
+    renderForgeryProcessResult(r) {
+        if (!r) return;
+
+        document.getElementById('forgery-process').innerHTML = `
+            <div class="proc-name ${r.is_forgery ? 'forgery' : 'authentic'}">${r.predicted_process || '--'}</div>
+            <div class="proc-confidence">置信度: ${((r.confidence || 0) * 100).toFixed(1)}%</div>
+        `;
+
+        const risk = r.forgery_risk || 0;
+        let riskColor = '#4caf50';
+        let riskText = '低';
+        if (risk > 0.8) { riskColor = '#f44336'; riskText = '极高'; }
+        else if (risk > 0.6) { riskColor = '#ff9800'; riskText = '高'; }
+        else if (risk > 0.4) { riskColor = '#ffeb3b'; riskText = '中'; }
+
+        document.getElementById('forgery-risk').innerHTML =
+            `作伪风险: <span style="color:${riskColor};font-weight:bold;">${(risk * 100).toFixed(1)}% (${riskText})</span>`;
+
+        if (r.top_predictions && r.top_predictions.length > 0) {
+            document.getElementById('forgery-top-list').innerHTML = `
+                <h4>工艺分类候选</h4>
+                ${r.top_predictions.map((p, i) => `
+                    <div class="forgery-top-item">
+                        <span class="top-rank">${i + 1}</span>
+                        <div class="forgery-top-main">
+                            <span class="top-name">${p.process_name}</span>
+                            <span class="top-prob">${(p.probability * 100).toFixed(1)}%</span>
+                        </div>
+                        <div class="forgery-top-desc">${p.description || ''}</div>
+                    </div>
+                `).join('')}
+            `;
+        }
+
+        if (r.diagnostic_features) {
+            document.getElementById('forgery-diagnostics-list').innerHTML = r.diagnostic_features.map(f => `
+                <div class="diag-item severity-${f.severity}">
+                    <span class="diag-name">${f.display_name}</span>
+                    <span class="diag-value">${f.value?.toFixed(3) || '--'}</span>
+                    <span class="diag-flag">${this._flagText(f.flag)}</span>
+                </div>
+            `).join('');
+        }
+    },
+
+    _flagText(flag) {
+        const map = { normal: '正常', abnormal_high: '偏高', abnormal_low: '偏低', note: '注意', warning: '异常', ok: '正常' };
+        return map[flag] || flag;
+    },
+
+    initVirtualPlay() {
+        const artifact = this.state.currentArtifact;
+        const jadeType = artifact?.jade_type || '玉璧';
+        const canvas = document.getElementById('play-canvas');
+        if (!canvas) return;
+        if (this._virtualPlayInitialized === jadeType) return;
+        this._virtualPlayInitialized = jadeType;
+
+        if (typeof VirtualPlay !== 'undefined') {
+            if (this._playInstance) {
+                this._playInstance.destroy && this._playInstance.destroy();
+            }
+            this._playInstance = Object.create(VirtualPlay);
+            this._playInstance.init(canvas, jadeType);
+
+            canvas.addEventListener('jade-play', (e) => this.updatePlayStats(e.detail.stats));
+            this.updatePlayStats(this._playInstance.getStats());
+        }
+    },
+
+    runAutoPlay() {
+        if (this._playInstance) {
+            this._playInstance.autoPlay(5);
+            const self = this;
+            if (!this._playStatInterval) {
+                this._playStatInterval = setInterval(() => {
+                    if (this._playInstance) self.updatePlayStats(this._playInstance.getStats());
+                }, 200);
+                setTimeout(() => {
+                    clearInterval(this._playStatInterval);
+                    this._playStatInterval = null;
+                }, 5200);
+            }
+        }
+    },
+
+    resetVirtualPlay() {
+        if (this._playInstance) {
+            this._playInstance.reset();
+            this.updatePlayStats(this._playInstance.getStats());
+        }
+    },
+
+    updatePlayStats(stats) {
+        if (!stats) return;
+        document.getElementById('play-count').textContent = stats.playCount || 0;
+
+        const polish = Math.min(1, stats.polishLevel || 0);
+        document.getElementById('play-polish-bar').style.width = (polish * 100).toFixed(0) + '%';
+        document.getElementById('play-polish-text').textContent = (polish * 100).toFixed(0) + '%';
+
+        const patina = Math.max(0, stats.patinaCoverage || 0);
+        document.getElementById('play-patina-bar').style.width = (patina * 100).toFixed(0) + '%';
+        document.getElementById('play-patina-text').textContent = (patina * 100).toFixed(0) + '%';
+
+        document.getElementById('play-wear-area').textContent = ((stats.wearAreaRatio || 0) * 100).toFixed(1) + '%';
     }
 };
 

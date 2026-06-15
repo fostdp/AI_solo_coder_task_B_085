@@ -36,6 +36,9 @@ app.conf.update(
         'anomaly_detector.tasks.*': {'queue': 'anomaly'},
         'alert_ws.tasks.*': {'queue': 'alerts'},
         'fiveg_receiver.tasks.*': {'queue': 'receiver'},
+        'provenance_tracer.tasks.*': {'queue': 'anomaly'},
+        'ph_inversion.tasks.*': {'queue': 'diffusion'},
+        'forgery_classifier.tasks.*': {'queue': 'anomaly'},
     },
     task_queues=(
         Queue('default'),
