@@ -10,7 +10,13 @@ const App = {
         alertTypeFilter: '',
         spectrumType: 'raman',
         currentView: 'density',
-        wsConnected: false
+        wsConnected: false,
+        wsClientId: null,
+        wsReconnectAttempts: 0,
+        wsMaxReconnectDelay: 60000,
+        wsBaseDelay: 1000,
+        wsCurrentDelay: 1000,
+        wsIsReconnecting: false
     },
 
     init() {
@@ -516,46 +522,142 @@ const App = {
 
     connectWebSocket() {
         try {
-            const wsUrl = CONFIG.WS_URL + '/alerts/';
+            if (this.state.wsIsReconnecting) return;
+
+            // 从 localStorage 读取 client_id 用于重连会话恢复
+            if (!this.state.wsClientId) {
+                try {
+                    this.state.wsClientId = localStorage.getItem('jade_ws_client_id');
+                } catch (e) {}
+            }
+
+            let wsUrl = CONFIG.WS_URL + '/alerts/';
+            if (this.state.wsClientId) {
+                wsUrl += '?client_id=' + encodeURIComponent(this.state.wsClientId);
+            }
+
             const ws = new WebSocket(wsUrl);
+            let heartbeatInterval = null;
+            let reconnectTimer = null;
 
             ws.onopen = () => {
                 this.state.wsConnected = true;
+                this.state.wsIsReconnecting = false;
+                this.state.wsReconnectAttempts = 0;
+                this.state.wsCurrentDelay = this.state.wsBaseDelay;
+
                 document.getElementById('connection-status').textContent = '● 实时监测中';
                 document.getElementById('connection-status').className = 'status-indicator online';
+
+                console.log('[WS] 连接已建立', this.state.wsReconnectAttempts > 0 ? `(重连 #${this.state.wsReconnectAttempts})` : '');
+
+                // 启动客户端心跳（响应服务端 ping）
+                heartbeatInterval = setInterval(() => {
+                    if (ws.readyState === WebSocket.OPEN) {
+                        try {
+                            ws.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }));
+                        } catch (e) {}
+                    }
+                }, 15000);
             };
 
             ws.onmessage = (event) => {
                 try {
                     const data = JSON.parse(event.data);
-                    if (data.type === 'alert' && data.data) {
+                    const msgType = data.type;
+
+                    if (msgType === 'connection_established') {
+                        // 服务端返回 client_id，保存到 localStorage
+                        if (data.data && data.data.client_id) {
+                            this.state.wsClientId = data.data.client_id;
+                            try {
+                                localStorage.setItem('jade_ws_client_id', this.state.wsClientId);
+                            } catch (e) {}
+                        }
+                        if (data.data && data.data.pending_alerts_count > 0) {
+                            console.log(`[WS] 重连恢复，${data.data.pending_alerts_count} 条暂存告警`);
+                        }
+                        return;
+                    }
+
+                    if (msgType === 'ping') {
+                        // 响应服务端心跳
+                        try {
+                            ws.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }));
+                        } catch (e) {}
+                        return;
+                    }
+
+                    if (msgType === 'alert' && data.data) {
                         this.handleWebSocketAlert(data.data);
+                        if (data.pending) {
+                            console.log('[WS] 收到断线期间暂存的告警');
+                        }
                     }
                 } catch (e) {
                     console.error('解析WebSocket消息失败:', e);
                 }
             };
 
-            ws.onclose = () => {
+            ws.onclose = (event) => {
                 this.state.wsConnected = false;
-                document.getElementById('connection-status').textContent = '● 连接断开';
+                this.state.wsIsReconnecting = true;
+
+                if (heartbeatInterval) {
+                    clearInterval(heartbeatInterval);
+                    heartbeatInterval = null;
+                }
+
+                document.getElementById('connection-status').textContent = `● 连接断开，重试中 (${this.state.wsReconnectAttempts})`;
                 document.getElementById('connection-status').className = 'status-indicator offline';
-                
-                setTimeout(() => {
+
+                // 指数退避重连: delay = base * 2^attempts, 最大 60s
+                this.state.wsReconnectAttempts++;
+                const delay = Math.min(
+                    this.state.wsBaseDelay * Math.pow(2, this.state.wsReconnectAttempts - 1),
+                    this.state.wsMaxReconnectDelay
+                );
+                // 添加随机抖动 (±10%) 避免惊群
+                const jitter = delay * (Math.random() * 0.2 - 0.1);
+                const finalDelay = Math.max(1000, delay + jitter);
+
+                console.warn(
+                    `[WS] 连接关闭 (code=${event.code}), ${finalDelay.toFixed(0)}ms 后第 ${this.state.wsReconnectAttempts} 次重连`
+                );
+
+                if (this.state.wsReconnectAttempts === 1) {
+                    // 第一次断线立即显示提示
+                    this.showAlertToast({
+                        alert_type: 'system',
+                        message: '监测连接已断开，正在尝试自动重连...',
+                        artifact_id: '系统'
+                    });
+                }
+
+                reconnectTimer = setTimeout(() => {
                     this.connectWebSocket();
-                }, 5000);
+                }, finalDelay);
             };
 
             ws.onerror = (e) => {
-                console.warn('WebSocket连接错误');
+                console.warn('[WS] 连接错误');
             };
 
             this.ws = ws;
 
         } catch (e) {
             console.warn('WebSocket不可用，降级为轮询模式');
+            this.state.wsIsReconnecting = false;
             document.getElementById('connection-status').textContent = '● 轮询模式';
             document.getElementById('connection-status').className = 'status-indicator offline';
+
+            // 轮询模式：每 10 秒拉取告警
+            if (!this._pollingInterval) {
+                this._pollingInterval = setInterval(() => {
+                    this.loadAlerts();
+                    this.loadStats();
+                }, 10000);
+            }
         }
     },
 

@@ -1,4 +1,8 @@
 const DensityMap = {
+    _contourCache: new Map(),
+    _cacheStats: { hits: 0, misses: 0, evictions: 0 },
+    _maxCacheSize: 20,
+
     draw(canvas, densityMap, options = {}) {
         const ctx = canvas.getContext('2d');
         const w = canvas.width;
@@ -22,7 +26,7 @@ const DensityMap = {
         }
 
         if (options.contour) {
-            this.drawContours(ctx, densityMap, w, h);
+            this.drawContours(ctx, densityMap, w, h, options);
         }
     },
 
@@ -98,28 +102,98 @@ const DensityMap = {
         }
     },
 
-    drawContours(ctx, densityMap, w, h) {
+    _hashDensityMap(densityMap) {
+        if (!densityMap || !densityMap.length) return 'empty';
+
         const gridSize = densityMap.length;
-        const levels = [50, 100, 150, 200];
-        
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
-        ctx.lineWidth = 1;
-        
+        let hash = gridSize.toString() + 'x' + (densityMap[0]?.length || 0);
+
+        const step = Math.max(1, Math.floor(gridSize / 16));
+        for (let i = 0; i < gridSize; i += step) {
+            for (let j = 0; j < gridSize; j += step) {
+                const v = densityMap[i]?.[j] || 0;
+                hash += '_' + Math.round(v);
+            }
+        }
+
+        let hashNum = 0;
+        for (let i = 0; i < hash.length; i++) {
+            hashNum = ((hashNum << 5) - hashNum + hash.charCodeAt(i)) | 0;
+        }
+        return hash + '_' + Math.abs(hashNum).toString(36);
+    },
+
+    _evictOldCache() {
+        if (this._contourCache.size <= this._maxCacheSize) return;
+
+        let oldestKey = null;
+        let oldestTime = Infinity;
+        for (const [key, value] of this._contourCache.entries()) {
+            if (value._lastUsed < oldestTime) {
+                oldestTime = value._lastUsed;
+                oldestKey = key;
+            }
+        }
+        if (oldestKey) {
+            this._contourCache.delete(oldestKey);
+            this._cacheStats.evictions++;
+        }
+    },
+
+    drawContours(ctx, densityMap, w, h, options = {}) {
+        const gridSize = densityMap.length;
+        const levels = options.contourLevels || [50, 100, 150, 200];
+        const style = options.contourStyle || {
+            strokeStyle: 'rgba(255, 255, 255, 0.3)',
+            lineWidth: 1
+        };
+
+        const cacheKey = `${this._hashDensityMap(densityMap)}_${w}x${h}_${levels.join(',')}`;
+        const cached = this._contourCache.get(cacheKey);
+
+        if (cached && cached.segments) {
+            this._cacheStats.hits++;
+            cached._lastUsed = Date.now();
+
+            ctx.strokeStyle = style.strokeStyle;
+            ctx.lineWidth = style.lineWidth;
+
+            for (const seg of cached.segments) {
+                ctx.beginPath();
+                ctx.moveTo(seg[0], seg[1]);
+                ctx.lineTo(seg[2], seg[3]);
+                ctx.stroke();
+            }
+
+            if (this._cacheStats.hits % 100 === 0) {
+                const total = this._cacheStats.hits + this._cacheStats.misses;
+                const hitRate = ((this._cacheStats.hits / total) * 100).toFixed(1);
+                console.debug(`[density.js] 等值线缓存命中率: ${hitRate}% (hits=${this._cacheStats.hits}, misses=${this._cacheStats.misses})`);
+            }
+            return;
+        }
+
+        this._cacheStats.misses++;
+        const segments = [];
+
+        ctx.strokeStyle = style.strokeStyle;
+        ctx.lineWidth = style.lineWidth;
+
         for (let i = 0; i < gridSize - 1; i++) {
             for (let j = 0; j < gridSize - 1; j++) {
                 const v00 = densityMap[i][j] || 0;
                 const v10 = densityMap[i][j + 1] || 0;
                 const v01 = densityMap[i + 1][j] || 0;
                 const v11 = densityMap[i + 1][j + 1] || 0;
-                
+
                 for (const level of levels) {
                     const x = j * (w / gridSize);
                     const y = i * (h / gridSize);
                     const cellW = w / gridSize;
                     const cellH = h / gridSize;
-                    
+
                     const edges = [];
-                    
+
                     if ((v00 - level) * (v10 - level) < 0) {
                         const t = (level - v00) / (v10 - v00);
                         edges.push([x + t * cellW, y]);
@@ -136,16 +210,49 @@ const DensityMap = {
                         const t = (level - v00) / (v01 - v00);
                         edges.push([x, y + t * cellH]);
                     }
-                    
+
                     if (edges.length >= 2) {
+                        const seg = [edges[0][0], edges[0][1], edges[1][0], edges[1][1]];
+                        segments.push(seg);
+
                         ctx.beginPath();
-                        ctx.moveTo(edges[0][0], edges[0][1]);
-                        ctx.lineTo(edges[1][0], edges[1][1]);
+                        ctx.moveTo(seg[0], seg[1]);
+                        ctx.lineTo(seg[2], seg[3]);
                         ctx.stroke();
                     }
                 }
             }
         }
+
+        this._contourCache.set(cacheKey, {
+            segments: segments,
+            gridSize: gridSize,
+            levels: levels,
+            w: w,
+            h: h,
+            _created: Date.now(),
+            _lastUsed: Date.now()
+        });
+
+        this._evictOldCache();
+    },
+
+    _clearContourCache() {
+        this._contourCache.clear();
+        this._cacheStats = { hits: 0, misses: 0, evictions: 0 };
+        console.debug('[density.js] 等值线缓存已清空');
+    },
+
+    _getCacheStats() {
+        const total = this._cacheStats.hits + this._cacheStats.misses;
+        return {
+            size: this._contourCache.size,
+            maxSize: this._maxCacheSize,
+            hits: this._cacheStats.hits,
+            misses: this._cacheStats.misses,
+            evictions: this._cacheStats.evictions,
+            hitRate: total > 0 ? (this._cacheStats.hits / total * 100).toFixed(1) + '%' : 'N/A'
+        };
     },
 
     drawLegend(canvas, colorScheme = 'heat') {

@@ -3,9 +3,20 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = 'django-insecure-jade-monitor-secret-key-2024'
-DEBUG = True
-ALLOWED_HOSTS = ['*']
+SECRET_KEY = os.environ.get(
+    'DJANGO_SECRET_KEY',
+    'django-insecure-jade-monitor-dev-fallback-2024-!changeme!'
+)
+
+if SECRET_KEY.startswith('django-insecure-') and os.environ.get('DJANGO_ENV') == 'production':
+    import warnings
+    warnings.warn(
+        "生产环境使用默认 SECRET_KEY！请设置 DJANGO_SECRET_KEY 环境变量",
+        RuntimeWarning
+    )
+
+DEBUG = os.environ.get('DJANGO_DEBUG', 'True').lower() in ('true', '1', 'yes')
+ALLOWED_HOSTS = os.environ.get('DJANGO_ALLOWED_HOSTS', '*').split(',')
 
 INSTALLED_APPS = [
     'django.contrib.admin',
