@@ -5,7 +5,8 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Optional
 from collections import deque
 from datetime import datetime
-
+from multiprocessing import Process, Queue
+import queue
 import logging
 
 logger = logging.getLogger(__name__)
@@ -14,6 +15,15 @@ if hasattr(np, 'trapezoid'):
     _np_trapz = np.trapezoid
 else:
     _np_trapz = np.trapz
+
+try:
+    import pymc3 as pm
+    import theano.tensor as tt
+    PYMC3_AVAILABLE = True
+    logger.info("[pHInversion] PyMC3可用，将使用NUTS采样器")
+except ImportError:
+    PYMC3_AVAILABLE = False
+    logger.warning("[pHInversion] PyMC3不可用，回退到Metropolis-Hastings采样器")
 
 
 @dataclass
@@ -67,6 +77,154 @@ class PHGeochemicalModel:
         return max(0.001, min(10.0, ratio))
 
 
+def _pymc3_sampling_worker(
+    result_queue: Queue,
+    depth_mm: np.ndarray,
+    fe3_fe2_ratio: np.ndarray,
+    age_years: float,
+    ph_min: float,
+    ph_max: float,
+    likelihood_sigma: float,
+    n_draws: int,
+    n_tune: int,
+    random_seed: int
+):
+    """独立进程中的PyMC3 NUTS采样工作函数"""
+    try:
+        if not PYMC3_AVAILABLE:
+            result_queue.put({'error': 'pymc3_not_available'})
+            return
+
+        geochem = PHGeochemicalModel()
+        obs_ratios = fe3_fe2_ratio[fe3_fe2_ratio > 0]
+        obs_depths = depth_mm[fe3_fe2_ratio > 0]
+
+        if len(obs_ratios) == 0:
+            result_queue.put({'error': 'no_valid_data'})
+            return
+
+        log_obs = np.log(obs_ratios + 1e-8)
+
+        def log_theo_ratio(ph_val, depth_val):
+            if ph_val < 4.0:
+                base = 0.01
+            elif ph_val < 5.5:
+                base = 0.04
+            elif ph_val < 7.0:
+                base = 0.12
+            elif ph_val < 8.5:
+                base = 0.30
+            else:
+                base = 0.65
+            ph_mod = 1.0 + 0.25 * (ph_val - 6.5)
+            depth_f = tt.exp(-depth_val / 3.0)
+            age_sat = 1.0 - tt.exp(-age_years / 2000.0)
+            ratio = base * ph_mod * depth_f * (0.3 + 0.7 * age_sat)
+            return tt.log(ratio + 1e-8)
+
+        with pm.Model() as ph_model:
+            ph = pm.Uniform('ph', lower=ph_min, upper=ph_max)
+
+            mu = []
+            for d in obs_depths:
+                mu.append(log_theo_ratio(ph, d))
+            mu = tt.stack(mu)
+
+            sigma = likelihood_sigma * (1.0 + obs_depths * 0.1)
+
+            obs = pm.Normal('obs', mu=mu, sigma=sigma, observed=log_obs)
+
+            trace = pm.sample(
+                draws=n_draws,
+                tune=n_tune,
+                cores=1,
+                chains=1,
+                random_seed=random_seed,
+                progressbar=False,
+                return_inferencedata=False
+            )
+
+        ph_samples = trace['ph']
+        acceptance_rate = float(np.mean(trace.get_sampler_stats('accept'))) if hasattr(trace, 'get_sampler_stats') else 0.5
+
+        result_queue.put({
+            'success': True,
+            'ph_chain': ph_samples.tolist(),
+            'acceptance_rate': acceptance_rate,
+            'sampler': 'pymc3_nuts',
+            'n_draws': len(ph_samples)
+        })
+
+    except Exception as e:
+        logger.error(f"[pHInversion] PyMC3采样进程异常: {e}")
+        result_queue.put({'error': str(e)})
+
+
+class PyMC3PHInferenceProcess:
+    """封装PyMC3 NUTS采样的独立进程管理器"""
+
+    def __init__(self, timeout: float = 120.0):
+        self.timeout = timeout
+        self._process: Optional[Process] = None
+        self._queue: Optional[Queue] = None
+
+    def run(
+        self,
+        profile: PatinaProfile,
+        age_years: float,
+        ph_min: float,
+        ph_max: float,
+        likelihood_sigma: float,
+        n_samples: int = 2000,
+        n_burn: int = 500,
+        random_seed: int = 42
+    ) -> Optional[Dict]:
+        self._queue = Queue()
+        self._process = Process(
+            target=_pymc3_sampling_worker,
+            args=(
+                self._queue,
+                profile.depth_mm,
+                profile.fe3_fe2_ratio,
+                age_years,
+                ph_min,
+                ph_max,
+                likelihood_sigma,
+                n_samples,
+                n_burn,
+                random_seed
+            ),
+            daemon=True
+        )
+
+        self._process.start()
+
+        try:
+            result = self._queue.get(timeout=self.timeout)
+        except queue.Empty:
+            logger.error(f"[pHInversion] PyMC3采样超时 ({self.timeout}s)")
+            self._terminate()
+            return None
+        finally:
+            self._terminate()
+
+        if result.get('error'):
+            logger.warning(f"[pHInversion] PyMC3采样失败: {result['error']}，回退到Metropolis-Hastings")
+            return None
+
+        return result
+
+    def _terminate(self):
+        if self._process and self._process.is_alive():
+            self._process.terminate()
+            self._process.join(timeout=5.0)
+        if self._queue:
+            try:
+                self._queue.close()
+            except:
+                pass
+
+
 class BayesianPHInversion:
     def __init__(
         self,
@@ -77,7 +235,10 @@ class BayesianPHInversion:
         n_particles: int = 2000,
         likelihood_sigma: float = 0.15,
         prior_type: str = 'uniform',
-        cache_dir: str = '_model_cache'
+        cache_dir: str = '_model_cache',
+        use_pymc3: Optional[bool] = None,
+        use_multiprocess: bool = True,
+        process_timeout: float = 120.0
     ):
         self.ph_min = ph_min
         self.ph_max = ph_max
@@ -89,6 +250,15 @@ class BayesianPHInversion:
         self.ph_prior_std = ph_prior_std if ph_prior_std is not None else (ph_max - ph_min) / 4.0
         self.geochem = PHGeochemicalModel()
         self._posterior_cache: Dict[str, Dict] = {}
+
+        if use_pymc3 is None:
+            self.use_pymc3 = PYMC3_AVAILABLE
+        else:
+            self.use_pymc3 = use_pymc3 and PYMC3_AVAILABLE
+
+        self.use_multiprocess = use_multiprocess
+        self._pymc3_process = PyMC3PHInferenceProcess(timeout=process_timeout)
+        self._sampler_used = None
 
     def sample_prior(self, n: int = None) -> np.ndarray:
         if n is None:
@@ -147,14 +317,14 @@ class BayesianPHInversion:
     def log_posterior(self, ph: float, profile: PatinaProfile, age_years: float) -> float:
         return self.log_prior(ph) + self.log_likelihood(ph, profile, age_years)
 
-    def mcmc_sample(
+    def _metropolis_hastings_sample(
         self,
         profile: PatinaProfile,
-        age_years: float = 5000.0,
-        n_burn: int = 500,
-        n_samples: int = 2000,
-        proposal_std: float = 0.3,
-        random_seed: int = 42
+        age_years: float,
+        n_burn: int,
+        n_samples: int,
+        proposal_std: float,
+        random_seed: int
     ) -> Dict:
         rng = np.random.RandomState(random_seed)
 
@@ -179,6 +349,49 @@ class BayesianPHInversion:
             if i >= n_burn:
                 chain.append(current_ph)
 
+        return {
+            'chain': np.array(chain),
+            'acceptance_rate': n_accepted / total_iter,
+            'sampler': 'metropolis_hastings'
+        }
+
+    def mcmc_sample(
+        self,
+        profile: PatinaProfile,
+        age_years: float = 5000.0,
+        n_burn: int = 500,
+        n_samples: int = 2000,
+        proposal_std: float = 0.3,
+        random_seed: int = 42
+    ) -> Dict:
+        chain = None
+        acceptance_rate = 0.0
+        self._sampler_used = None
+
+        if self.use_pymc3 and self.use_multiprocess:
+            logger.info("[pHInversion] 尝试使用PyMC3 NUTS（独立进程）")
+            pymc3_result = self._pymc3_process.run(
+                profile, age_years,
+                self.ph_min, self.ph_max,
+                self.likelihood_sigma,
+                n_samples, n_burn,
+                random_seed
+            )
+            if pymc3_result and pymc3_result.get('success'):
+                chain = np.array(pymc3_result['ph_chain'])
+                acceptance_rate = pymc3_result['acceptance_rate']
+                self._sampler_used = pymc3_result['sampler']
+                logger.info(f"[pHInversion] PyMC3 NUTS采样完成，样本数={len(chain)}")
+
+        if chain is None or len(chain) < 100:
+            logger.info("[pHInversion] 使用Metropolis-Hastings采样（回退）")
+            mh_result = self._metropolis_hastings_sample(
+                profile, age_years, n_burn, n_samples, proposal_std, random_seed
+            )
+            chain = mh_result['chain']
+            acceptance_rate = mh_result['acceptance_rate']
+            self._sampler_used = mh_result['sampler']
+
         chain = np.array(chain)
 
         ph_mean = float(np.mean(chain))
@@ -186,8 +399,6 @@ class BayesianPHInversion:
         ph_std = float(np.std(chain))
         ph_ci_low = float(np.percentile(chain, 2.5))
         ph_ci_high = float(np.percentile(chain, 97.5))
-
-        acceptance_rate = n_accepted / total_iter
 
         hist_bins = np.linspace(self.ph_min, self.ph_max, 50)
         hist_counts, hist_edges = np.histogram(chain, bins=hist_bins, density=True)
@@ -221,7 +432,9 @@ class BayesianPHInversion:
             'redox_condition': redox_condition,
             'interpretation': interpretation,
             'age_years_used': age_years,
-            'timestamp': datetime.now().isoformat()
+            'timestamp': datetime.now().isoformat(),
+            'sampler_used': self._sampler_used,
+            'pymc3_available': PYMC3_AVAILABLE
         }
 
     def _classify_soil_environment(self, ph: float) -> Dict:

@@ -88,6 +88,8 @@ def invert_ph_history(self, artifact_id: str, diffusion_result: dict = None):
             'interpretation': inversion_result['interpretation'],
             'ph_history': history_result,
             'acceptance_rate': inversion_result['acceptance_rate'],
+            'sampler_used': inversion_result.get('sampler_used'),
+            'pymc3_available': inversion_result.get('pymc3_available'),
             'fe_profile': {
                 'depths_mm': profile.depth_mm.tolist(),
                 'fe3_concentration': profile.fe3_concentration.tolist(),
@@ -102,6 +104,7 @@ def invert_ph_history(self, artifact_id: str, diffusion_result: dict = None):
             f"[pH反演] 玉器 {artifact_id} pH历史反演完成: "
             f"pH={inversion_result['ph_mean']:.2f}±{inversion_result['ph_std']:.2f}"
             f" [{inversion_result['soil_environment']['name']}]"
+            f" sampler={inversion_result.get('sampler_used', 'unknown')}"
         )
 
         if self.request.called_directly:
@@ -117,6 +120,7 @@ def invert_ph_history(self, artifact_id: str, diffusion_result: dict = None):
                 'interpretation': inversion_result['interpretation'],
                 'ph_history': history_result,
                 'acceptance_rate': inversion_result['acceptance_rate'],
+                'sampler_used': inversion_result.get('sampler_used'),
                 'fe_profile': {
                     'depths_mm': profile.depth_mm.tolist(),
                     'fe3_concentration': profile.fe3_concentration.tolist(),

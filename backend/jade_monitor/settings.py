@@ -57,9 +57,10 @@ INSTALLED_APPS = [
     'diffusion_solver',
     'anomaly_detector',
     'alert_ws',
-    'provenance_tracer',
+    'provenance_rf',
     'ph_inversion',
-    'forgery_classifier',
+    'craft_svm',
+    'patina_shader',
 ]
 
 MIDDLEWARE = [

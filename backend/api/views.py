@@ -464,7 +464,7 @@ class ProvenanceView(APIView):
         if not artifact:
             return Response({'error': 'Artifact not found'}, status=404)
 
-        from provenance_tracer.tasks import trace_provenance
+        from provenance_rf.tasks import trace_provenance
 
         xrf_data = request.data.get('xrf_spectrum')
         trace_provenance.delay(artifact_id, xrf_data)
@@ -526,7 +526,7 @@ class ForgeryProcessView(APIView):
         if not artifact:
             return Response({'error': 'Artifact not found'}, status=404)
 
-        from forgery_classifier.tasks import classify_forgery_process
+        from craft_svm.tasks import classify_forgery_process
 
         raman_data = request.data.get('raman_spectrum')
         classify_forgery_process.delay(artifact_id, raman_data)
