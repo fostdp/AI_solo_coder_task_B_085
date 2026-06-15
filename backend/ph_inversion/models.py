@@ -37,34 +37,34 @@ class PatinaProfile:
 
 class PHGeochemicalModel:
     def __init__(self):
-        self.k_oxidation = 2.5e-4
+        self.k_oxidation = 0.35
         self.eh_ph_slope = -0.059
         self.fe3_solubility_ksp = 2.79e-39
         self.fe2_solubility_ksp = 4.87e-17
         self.temperature_c = 20.0
+        self._rng = np.random.RandomState(7)
 
     def theoretical_fe_ratio(self, ph: float, depth_mm: float, age_years: float) -> float:
-        t_seconds = max(age_years * 365.25 * 24 * 3600, 1.0)
-        eh = 0.8 - self.eh_ph_slope * ph
-
         if ph < 4.0:
-            base_ratio = 0.005
+            base_ratio = 0.01
         elif ph < 5.5:
-            base_ratio = 0.02
+            base_ratio = 0.04
         elif ph < 7.0:
-            base_ratio = 0.08
+            base_ratio = 0.12
         elif ph < 8.5:
-            base_ratio = 0.25
+            base_ratio = 0.30
         else:
-            base_ratio = 0.55
+            base_ratio = 0.65
 
-        oxidation_rate = self.k_oxidation * np.exp(0.12 * (ph - 5.5))
-        depth_factor = np.exp(-depth_mm / 2.5)
-        age_factor = 1.0 - np.exp(-t_seconds / (1e12))
+        ph_modulation = 1.0 + 0.25 * (ph - 6.5)
+        depth_factor = np.exp(-depth_mm / 3.0)
+        age_saturation = 1.0 - np.exp(-age_years / 2000.0)
 
-        ratio = base_ratio * oxidation_rate * age_factor * depth_factor
-        ratio += np.random.RandomState(int(ph * 100 + depth_mm * 10)).normal(0, ratio * 0.08)
-        return max(0.0, min(20.0, ratio))
+        ratio = base_ratio * ph_modulation * depth_factor * (0.3 + 0.7 * age_saturation)
+        noise_std = ratio * 0.08
+        if noise_std > 0:
+            ratio += self._rng.normal(0, noise_std)
+        return max(0.001, min(10.0, ratio))
 
 
 class BayesianPHInversion:
